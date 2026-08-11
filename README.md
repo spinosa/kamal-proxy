@@ -71,15 +71,16 @@ Targets that don't speak plain HTTP -- a WebSocket-only service, such as an MQTT
 broker behind `wss://` -- can be checked with the WebSocket opening handshake
 instead, in which case `101 Switching Protocols` is what counts as healthy:
 
-    kamal-proxy deploy service1 --target broker:9001 \
-      --health-check-protocol websocket \
-      --health-check-path /mqtt \
-      --health-check-websocket-subprotocol mqtt
+    kamal-proxy deploy service1 --target broker:9001 --health-check-protocol websocket
 
-`--health-check-websocket-subprotocol` is optional, but some servers won't
-complete the handshake without the subprotocol they speak. The alternative --
-running a second, HTTP-only listener purely to be checked -- proves that
-listener is up, not the one clients actually use.
+`--health-check-websocket-subprotocol` sets `Sec-WebSocket-Protocol`, which
+some servers require before they will complete the handshake.
+
+Prefer leaving `--health-check-path` at its default rather than pointing it at
+a path your clients use. While a service is paused or stopped, any GET on the
+health check path is answered with a bare `200` so that upstream checks keep
+passing -- so a path shared with live traffic would answer real clients with
+that `200` instead of holding them.
 
 For example, to change the health check path to something other than `/up`, you
 could:
