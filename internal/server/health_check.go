@@ -17,8 +17,6 @@ import (
 const (
 	healthCheckUserAgent = "kamal-proxy"
 
-	// WebSocket-only targets have no HTTP endpoint to check, and answer a GET
-	// by closing the connection.
 	HealthCheckProtocolHTTP      = "http"
 	HealthCheckProtocolWebSocket = "websocket"
 
@@ -113,7 +111,6 @@ func (hc *HealthCheck) check() {
 	if hc.protocol == HealthCheckProtocolWebSocket {
 		req.Header.Set("Connection", "Upgrade")
 		req.Header.Set("Upgrade", "websocket")
-		// RFC 6455 4.1 requires a fresh random nonce for each connection.
 		key, err := newWebSocketKey()
 		if err != nil {
 			hc.reportResult(false, err)
@@ -159,8 +156,6 @@ func (hc *HealthCheck) check() {
 		return
 	}
 
-	// Check that the server derived the digest from our key, not just that it
-	// answered 101.
 	if hc.protocol == HealthCheckProtocolWebSocket {
 		if got, want := resp.Header.Get("Sec-WebSocket-Accept"), webSocketAccept(websocketKey); got != want {
 			hc.reportResult(false, ErrorHealthCheckInvalidHandshake)
@@ -171,7 +166,6 @@ func (hc *HealthCheck) check() {
 	hc.reportResult(true, nil)
 }
 
-// A successful WebSocket handshake answers 101, which is not a 2xx.
 func (hc *HealthCheck) statusIsHealthy(status int) bool {
 	if hc.protocol == HealthCheckProtocolWebSocket {
 		return status == http.StatusSwitchingProtocols
