@@ -67,6 +67,20 @@ If you need to customize the health checks for your application, there are a
 few `deploy` flags you can use. See the help for `--health-check-path`,
 `--health-check-port`, `--health-check-timeout`, and `--health-check-interval`.
 
+Targets that don't speak plain HTTP -- a WebSocket-only service, such as an MQTT
+broker behind `wss://` -- can be checked with the WebSocket opening handshake
+instead, in which case `101 Switching Protocols` is what counts as healthy:
+
+    kamal-proxy deploy service1 --target broker:9001 \
+      --health-check-protocol websocket \
+      --health-check-path /mqtt \
+      --health-check-websocket-subprotocol mqtt
+
+`--health-check-websocket-subprotocol` is optional, but some servers won't
+complete the handshake without the subprotocol they speak. The alternative --
+running a second, HTTP-only listener purely to be checked -- proves that
+listener is up, not the one clients actually use.
+
 For example, to change the health check path to something other than `/up`, you
 could:
 

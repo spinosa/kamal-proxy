@@ -38,6 +38,7 @@ const (
 
 	DefaultHealthCheckPath     = "/up"
 	DefaultHealthCheckPort     = 0
+	DefaultHealthCheckProtocol = HealthCheckProtocolHTTP
 	DefaultHealthCheckInterval = time.Second
 	DefaultHealthCheckTimeout  = time.Second * 5
 
@@ -86,6 +87,12 @@ type HealthCheckConfig struct {
 	Interval time.Duration `json:"interval"`
 	Timeout  time.Duration `json:"timeout"`
 	Host     string        `json:"host"`
+	Protocol string        `json:"protocol"`
+
+	// Subprotocol to request when Protocol is `websocket`. Optional, but some
+	// servers will not complete the handshake without the one they speak --
+	// an MQTT-over-WebSocket broker wants `mqtt`, for instance.
+	WebSocketSubprotocol string `json:"websocket_subprotocol"`
 }
 
 type DeploymentOptions struct {
