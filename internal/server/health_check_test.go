@@ -271,3 +271,33 @@ func TestWebSocketKeysAreRandomAndWellFormed(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, decoded, 16, "RFC 6455 requires a 16-byte nonce")
 }
+
+// A typo in the protocol must fail loudly. Falling back to HTTP would leave a
+// WebSocket-only target failing forever with nothing to explain why, which is
+// indistinguishable from a genuinely broken service.
+func TestHealthCheckConfigValidate(t *testing.T) {
+	t.Run("accepts the supported protocols", func(t *testing.T) {
+		for _, protocol := range []string{"", HealthCheckProtocolHTTP, HealthCheckProtocolWebSocket} {
+			assert.NoError(t, HealthCheckConfig{Protocol: protocol}.Validate(), "protocol %q", protocol)
+		}
+	})
+
+	t.Run("rejects an unknown protocol", func(t *testing.T) {
+		err := HealthCheckConfig{Protocol: "websockets"}.Validate()
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrHealthCheckConfigInvalid)
+		assert.Contains(t, err.Error(), "websockets", "the message should name the offending value")
+	})
+
+	t.Run("rejects a subprotocol without websocket", func(t *testing.T) {
+		err := HealthCheckConfig{Protocol: HealthCheckProtocolHTTP, WebSocketSubprotocol: "mqtt"}.Validate()
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrHealthCheckConfigInvalid)
+	})
+
+	t.Run("allows a subprotocol with websocket", func(t *testing.T) {
+		assert.NoError(t, HealthCheckConfig{Protocol: HealthCheckProtocolWebSocket, WebSocketSubprotocol: "mqtt"}.Validate())
+	})
+}

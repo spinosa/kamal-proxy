@@ -58,6 +58,7 @@ var (
 	ErrorUnableToLoadErrorPages              = errors.New("unable to load error pages")
 	ErrorAutomaticTLSDoesNotSupportWildcards = errors.New("automatic TLS does not support wildcards")
 	ErrServiceOptionsInvalid                 = errors.New("service options invalid")
+	ErrHealthCheckConfigInvalid              = errors.New("invalid health check configuration")
 
 	contextKeyInternalRequest = contextKey("internal-request")
 )
@@ -93,6 +94,26 @@ type HealthCheckConfig struct {
 	// servers will not complete the handshake without the one they speak --
 	// an MQTT-over-WebSocket broker wants `mqtt`, for instance.
 	WebSocketSubprotocol string `json:"websocket_subprotocol"`
+}
+
+// An unrecognised protocol must be rejected rather than quietly treated as
+// HTTP. Silently downgrading would leave a WebSocket-only target failing its
+// health check forever, with nothing to explain why -- a typo like
+// `websockets` would look exactly like a broken service.
+func (hc HealthCheckConfig) Validate() error {
+	switch hc.Protocol {
+	case "", HealthCheckProtocolHTTP, HealthCheckProtocolWebSocket:
+	default:
+		return fmt.Errorf("%w: unknown protocol %q (must be %q or %q)",
+			ErrHealthCheckConfigInvalid, hc.Protocol, HealthCheckProtocolHTTP, HealthCheckProtocolWebSocket)
+	}
+
+	if hc.WebSocketSubprotocol != "" && hc.Protocol != HealthCheckProtocolWebSocket {
+		return fmt.Errorf("%w: a websocket subprotocol can only be set when the protocol is %q",
+			ErrHealthCheckConfigInvalid, HealthCheckProtocolWebSocket)
+	}
+
+	return nil
 }
 
 type DeploymentOptions struct {

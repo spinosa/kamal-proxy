@@ -106,5 +106,9 @@ func (c *deployCommand) preRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	if err := c.args.TargetOptions.HealthCheckConfig.Validate(); err != nil {
+		return err
+	}
+
 	return nil
 }
