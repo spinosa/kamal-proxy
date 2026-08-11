@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -144,9 +145,10 @@ func TestHealthCheckWithWebSocketProtocol(t *testing.T) {
 				http.Error(w, "expected websocket upgrade", http.StatusBadRequest)
 				return
 			}
-			// Complete the handshake the way RFC 6455 requires.
-			w.Header().Set("Sec-WebSocket-Accept", webSocketAccept(r.Header.Get("Sec-WebSocket-Key")))
-			w.WriteHeader(http.StatusSwitchingProtocols)
+
+			c, err := websocket.Accept(w, r, &websocket.AcceptOptions{})
+			require.NoError(t, err)
+			c.CloseNow()
 		}))
 		t.Cleanup(server.Close)
 
@@ -234,20 +236,55 @@ func TestHealthCheckWebSocketDoesNotBlockOnAnOpenConnection(t *testing.T) {
 // A target that answers 101 without the right digest is not a WebSocket
 // endpoint, and must not be treated as healthy.
 func TestHealthCheckWebSocketRejectsABogusHandshake(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Sec-WebSocket-Accept", "obviously-not-the-right-digest")
-		w.WriteHeader(http.StatusSwitchingProtocols)
-	}))
-	t.Cleanup(server.Close)
+	run := func(t *testing.T, subprotocol string, respond func(http.ResponseWriter, *http.Request)) {
+		server := httptest.NewServer(http.HandlerFunc(respond))
+		t.Cleanup(server.Close)
 
-	serverURL, err := url.Parse(server.URL)
-	require.NoError(t, err)
+		serverURL, err := url.Parse(server.URL)
+		require.NoError(t, err)
 
-	consumer := make(mockHealthCheckConsumer)
-	hc := NewHealthCheck(consumer, serverURL, shortTimeout, shortTimeout, "", HealthCheckProtocolWebSocket, "")
-	t.Cleanup(hc.Close)
+		consumer := make(mockHealthCheckConsumer)
+		hc := NewHealthCheck(consumer, serverURL, shortTimeout, shortTimeout, "", HealthCheckProtocolWebSocket, subprotocol)
+		t.Cleanup(hc.Close)
 
-	assert.False(t, <-consumer)
+		assert.False(t, <-consumer)
+	}
+
+	accept := func(r *http.Request) string { return webSocketAccept(r.Header.Get("Sec-WebSocket-Key")) }
+
+	t.Run("wrong digest", func(t *testing.T) {
+		run(t, "", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Upgrade", "websocket")
+			w.Header().Set("Connection", "Upgrade")
+			w.Header().Set("Sec-WebSocket-Accept", "obviously-not-the-right-digest")
+			w.WriteHeader(http.StatusSwitchingProtocols)
+		})
+	})
+
+	t.Run("101 without the upgrade headers", func(t *testing.T) {
+		run(t, "", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Sec-WebSocket-Accept", accept(r))
+			w.WriteHeader(http.StatusSwitchingProtocols)
+		})
+	})
+
+	t.Run("missing the Connection token", func(t *testing.T) {
+		run(t, "", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Upgrade", "websocket")
+			w.Header().Set("Sec-WebSocket-Accept", accept(r))
+			w.WriteHeader(http.StatusSwitchingProtocols)
+		})
+	})
+
+	t.Run("a subprotocol we never offered", func(t *testing.T) {
+		run(t, "mqtt", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Upgrade", "websocket")
+			w.Header().Set("Connection", "Upgrade")
+			w.Header().Set("Sec-WebSocket-Accept", accept(r))
+			w.Header().Set("Sec-WebSocket-Protocol", "chat")
+			w.WriteHeader(http.StatusSwitchingProtocols)
+		})
+	})
 }
 
 // The key is a nonce: RFC 6455 requires a fresh random one per connection.

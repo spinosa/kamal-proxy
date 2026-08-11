@@ -11,7 +11,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
+
+	"golang.org/x/net/http/httpguts"
 )
 
 const (
@@ -157,13 +160,36 @@ func (hc *HealthCheck) check() {
 	}
 
 	if hc.protocol == HealthCheckProtocolWebSocket {
-		if got, want := resp.Header.Get("Sec-WebSocket-Accept"), webSocketAccept(websocketKey); got != want {
-			hc.reportResult(false, ErrorHealthCheckInvalidHandshake)
+		if err := hc.validateHandshake(resp, websocketKey); err != nil {
+			hc.reportResult(false, err)
 			return
 		}
 	}
 
 	hc.reportResult(true, nil)
+}
+
+// The client-side checks RFC 6455 4.1 requires of a handshake response.
+func (hc *HealthCheck) validateHandshake(resp *http.Response, key string) error {
+	if upgrade := resp.Header.Get("Upgrade"); !strings.EqualFold(upgrade, "websocket") {
+		return fmt.Errorf("%w: Upgrade was %q", ErrorHealthCheckInvalidHandshake, upgrade)
+	}
+
+	if !httpguts.HeaderValuesContainsToken(resp.Header["Connection"], "Upgrade") {
+		return fmt.Errorf("%w: Connection was %q", ErrorHealthCheckInvalidHandshake, resp.Header.Get("Connection"))
+	}
+
+	if got, want := resp.Header.Get("Sec-WebSocket-Accept"), webSocketAccept(key); got != want {
+		return fmt.Errorf("%w: Sec-WebSocket-Accept was %q, want %q", ErrorHealthCheckInvalidHandshake, got, want)
+	}
+
+	// A server may decline the subprotocol, but must not answer with one that
+	// was never offered.
+	if selected := resp.Header.Get("Sec-WebSocket-Protocol"); selected != "" && selected != hc.subprotocol {
+		return fmt.Errorf("%w: server selected subprotocol %q", ErrorHealthCheckInvalidHandshake, selected)
+	}
+
+	return nil
 }
 
 func (hc *HealthCheck) statusIsHealthy(status int) bool {

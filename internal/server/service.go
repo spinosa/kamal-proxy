@@ -90,8 +90,9 @@ type HealthCheckConfig struct {
 	Host     string        `json:"host"`
 	Protocol string        `json:"protocol"`
 
-	// Some servers require the subprotocol they speak before they will complete
-	// the handshake (Mosquitto wants `mqtt`).
+	// MQTT over WebSocket, for instance, requires the client to offer `mqtt`
+	// and the server to select it; a strict server rejects a handshake without
+	// it. Optional, as many servers do not negotiate a subprotocol at all.
 	WebSocketSubprotocol string `json:"websocket_subprotocol"`
 }
 
