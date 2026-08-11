@@ -134,10 +134,8 @@ func testHealthCheckTarget(t testing.TB, expectedHost string) *url.URL {
 	return serverURL
 }
 
-// A WebSocket-only target (an MQTT-over-WebSocket broker, for instance) has no
-// HTTP endpoint to offer: a plain GET is answered by closing the connection.
-// Checking it with the WebSocket handshake tests the port clients actually use,
-// instead of a second listener that proves nothing about the first.
+// A WebSocket-only target has no HTTP endpoint: a plain GET is answered by
+// closing the connection.
 func TestHealthCheckWithWebSocketProtocol(t *testing.T) {
 	websocketTarget := func(t *testing.T) *url.URL {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -182,12 +180,9 @@ func TestHealthCheckWithWebSocketProtocol(t *testing.T) {
 	})
 }
 
-// Regression: a real WebSocket server completes the handshake and then waits
-// for the client to speak the protocol -- it does not close the connection.
-// Draining the response body in that state blocks until the timeout, so the
-// check reports nothing at all: no success, no failure, just a stalled deploy.
-// The httptest servers above hide this by returning from the handler (which
-// closes the connection), so this one holds it open the way a broker does.
+// Regression: a real server holds the connection open after the handshake, so
+// draining the body blocks and the check reports nothing at all. The httptest
+// servers above hide this by closing the connection when the handler returns.
 func TestHealthCheckWebSocketDoesNotBlockOnAnOpenConnection(t *testing.T) {
 	held := make(chan struct{})
 	t.Cleanup(func() { close(held) })
@@ -205,9 +200,7 @@ func TestHealthCheckWebSocketDoesNotBlockOnAnOpenConnection(t *testing.T) {
 			go func(c net.Conn) {
 				buf := make([]byte, 1024)
 				n, _ := c.Read(buf)
-				// Case-insensitive on purpose: Go writes this header in its own
-				// canonical form ("Sec-Websocket-Key"), and header names are
-				// case-insensitive on the wire anyway.
+				// Go writes this header in its own canonical form.
 				key := ""
 				for _, line := range strings.Split(string(buf[:n]), "\r\n") {
 					name, value, found := strings.Cut(line, ": ")
@@ -238,9 +231,8 @@ func TestHealthCheckWebSocketDoesNotBlockOnAnOpenConnection(t *testing.T) {
 	}
 }
 
-// Answering 101 is cheap; deriving the right digest from our key is not. A
-// target that does the former but not the latter is not a WebSocket endpoint,
-// and treating it as healthy would route real traffic at it.
+// A target that answers 101 without the right digest is not a WebSocket
+// endpoint, and must not be treated as healthy.
 func TestHealthCheckWebSocketRejectsABogusHandshake(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Sec-WebSocket-Accept", "obviously-not-the-right-digest")
@@ -272,9 +264,7 @@ func TestWebSocketKeysAreRandomAndWellFormed(t *testing.T) {
 	assert.Len(t, decoded, 16, "RFC 6455 requires a 16-byte nonce")
 }
 
-// A typo in the protocol must fail loudly. Falling back to HTTP would leave a
-// WebSocket-only target failing forever with nothing to explain why, which is
-// indistinguishable from a genuinely broken service.
+// A typo must fail loudly rather than silently becoming an HTTP check.
 func TestHealthCheckConfigValidate(t *testing.T) {
 	t.Run("accepts the supported protocols", func(t *testing.T) {
 		for _, protocol := range []string{"", HealthCheckProtocolHTTP, HealthCheckProtocolWebSocket} {

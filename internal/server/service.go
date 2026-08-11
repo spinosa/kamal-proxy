@@ -90,16 +90,13 @@ type HealthCheckConfig struct {
 	Host     string        `json:"host"`
 	Protocol string        `json:"protocol"`
 
-	// Subprotocol to request when Protocol is `websocket`. Optional, but some
-	// servers will not complete the handshake without the one they speak --
-	// an MQTT-over-WebSocket broker wants `mqtt`, for instance.
+	// Some servers require the subprotocol they speak before they will complete
+	// the handshake (Mosquitto wants `mqtt`).
 	WebSocketSubprotocol string `json:"websocket_subprotocol"`
 }
 
-// An unrecognised protocol must be rejected rather than quietly treated as
-// HTTP. Silently downgrading would leave a WebSocket-only target failing its
-// health check forever, with nothing to explain why -- a typo like
-// `websockets` would look exactly like a broken service.
+// Validate rejects an unrecognised protocol rather than letting it fall back
+// to HTTP, which would leave a WebSocket-only target failing indefinitely.
 func (hc HealthCheckConfig) Validate() error {
 	switch hc.Protocol {
 	case "", HealthCheckProtocolHTTP, HealthCheckProtocolWebSocket:

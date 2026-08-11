@@ -17,19 +17,13 @@ import (
 const (
 	healthCheckUserAgent = "kamal-proxy"
 
-	// Health check protocols. `http` sends a GET and requires a 2xx.
-	// `websocket` sends the opening handshake of a WebSocket connection and
-	// requires a 101, so that WebSocket-only targets -- which have no HTTP
-	// endpoint to offer -- can be checked on the port they actually serve,
-	// rather than needing a second listener that proves nothing about the
-	// first one.
+	// WebSocket-only targets have no HTTP endpoint to check, and answer a GET
+	// by closing the connection.
 	HealthCheckProtocolHTTP      = "http"
 	HealthCheckProtocolWebSocket = "websocket"
 
-	// RFC 6455's fixed GUID, concatenated with our key and hashed by the server
-	// to produce Sec-WebSocket-Accept. Not a security mechanism: it exists so a
-	// client can tell a real WebSocket endpoint from something that merely
-	// answers 101.
+	// Concatenated with our key and hashed by the server to produce
+	// Sec-WebSocket-Accept (RFC 6455).
 	webSocketGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 )
 
@@ -119,10 +113,7 @@ func (hc *HealthCheck) check() {
 	if hc.protocol == HealthCheckProtocolWebSocket {
 		req.Header.Set("Connection", "Upgrade")
 		req.Header.Set("Upgrade", "websocket")
-		// RFC 6455 4.1: the key MUST be a randomly selected 16-byte value,
-		// freshly chosen for each connection. It is not a secret -- it stops
-		// intermediaries from replaying a cached handshake -- but a fixed one
-		// would both violate the spec and defeat that purpose.
+		// RFC 6455 4.1 requires a fresh random nonce for each connection.
 		key, err := newWebSocketKey()
 		if err != nil {
 			hc.reportResult(false, err)
@@ -155,17 +146,10 @@ func (hc *HealthCheck) check() {
 	}
 	defer resp.Body.Close()
 
-	// Draining lets the connection be reused, but it must not happen on an
-	// upgrade. Go replaces Response.Body with the underlying connection
-	// (net/http's readWriteCloserBody) when a response is a genuine protocol
-	// switch -- 101 AND an Upgrade header AND Connection: Upgrade, see
-	// Response.isProtocolSwitch. Reading that body blocks until the peer sends
-	// something, which for a protocol we deliberately don't speak is never, so
-	// the check would report neither success nor failure.
-	//
-	// Skipping on any 101 is a superset of that condition and safe either way:
-	// a connection that has switched protocols is not reusable for HTTP, so
-	// there is nothing to gain by draining it. Close() below still runs.
+	// On a protocol switch, Response.Body is the underlying connection (see
+	// Response.isProtocolSwitch), and reading it blocks until the peer sends
+	// something. Nothing to drain in that case anyway, as the connection can
+	// no longer be reused for HTTP.
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		_, _ = io.Copy(io.Discard, resp.Body)
 	}
@@ -175,9 +159,8 @@ func (hc *HealthCheck) check() {
 		return
 	}
 
-	// Answering 101 is not the same as speaking WebSocket. Verifying the digest
-	// the server derived from our key is what distinguishes a real endpoint
-	// from anything that just returns the right number.
+	// Check that the server derived the digest from our key, not just that it
+	// answered 101.
 	if hc.protocol == HealthCheckProtocolWebSocket {
 		if got, want := resp.Header.Get("Sec-WebSocket-Accept"), webSocketAccept(websocketKey); got != want {
 			hc.reportResult(false, ErrorHealthCheckInvalidHandshake)
@@ -188,10 +171,7 @@ func (hc *HealthCheck) check() {
 	hc.reportResult(true, nil)
 }
 
-// A successful WebSocket handshake answers 101 Switching Protocols, which is
-// not a 2xx. We close the connection immediately afterwards without speaking
-// the protocol -- completing the handshake proves the listener is accepting
-// and answering connections, which is what a health check is for.
+// A successful WebSocket handshake answers 101, which is not a 2xx.
 func (hc *HealthCheck) statusIsHealthy(status int) bool {
 	if hc.protocol == HealthCheckProtocolWebSocket {
 		return status == http.StatusSwitchingProtocols
@@ -209,8 +189,8 @@ func newWebSocketKey() (string, error) {
 	return base64.StdEncoding.EncodeToString(nonce), nil
 }
 
-// The digest RFC 6455 requires the server to return for a given key. SHA-1 is
-// mandated by the protocol here and is not being relied on for security.
+// webSocketAccept returns the digest RFC 6455 requires the server to send back
+// for a given key. SHA-1 is mandated by the protocol, not chosen for security.
 func webSocketAccept(key string) string {
 	sum := sha1.Sum([]byte(key + webSocketGUID))
 
