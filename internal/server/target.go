@@ -226,6 +226,8 @@ func (t *Target) BeginHealthChecks(stateConsumer TargetStateConsumer) {
 			t.options.HealthCheckConfig.Interval,
 			t.options.HealthCheckConfig.Timeout,
 			t.options.HealthCheckConfig.Host,
+			t.options.HealthCheckConfig.Protocol,
+			t.options.HealthCheckConfig.WebSocketSubprotocol,
 		)
 	})
 }
