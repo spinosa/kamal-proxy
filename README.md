@@ -74,13 +74,10 @@ instead, in which case `101 Switching Protocols` is what counts as healthy:
     kamal-proxy deploy service1 --target broker:9001 --health-check-protocol websocket
 
 `--health-check-websocket-subprotocol` sets `Sec-WebSocket-Protocol`, which
-some servers require before they will complete the handshake.
-
-Prefer leaving `--health-check-path` at its default rather than pointing it at
-a path your clients use. While a service is paused or stopped, any GET on the
-health check path is answered with a bare `200` so that upstream checks keep
-passing -- so a path shared with live traffic would answer real clients with
-that `200` instead of holding them.
+some servers require before they will complete the handshake. The path is left
+alone above because WebSocket servers generally upgrade on any path, and a
+health check path shared with live traffic is answered with a bare `200` while
+the service is paused or stopped.
 
 For example, to change the health check path to something other than `/up`, you
 could:
