@@ -2,22 +2,36 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha1"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
+
+	"golang.org/x/net/http/httpguts"
 )
 
 const (
 	healthCheckUserAgent = "kamal-proxy"
+
+	HealthCheckProtocolHTTP      = "http"
+	HealthCheckProtocolWebSocket = "websocket"
+
+	// Concatenated with our key and hashed by the server to produce
+	// Sec-WebSocket-Accept (RFC 6455).
+	webSocketGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 )
 
 var (
 	ErrorHealthCheckRequestTimedOut  = errors.New("request timed out")
 	ErrorHealthCheckUnexpectedStatus = errors.New("unexpected status")
+	ErrorHealthCheckInvalidHandshake = errors.New("invalid websocket handshake")
 )
 
 type HealthCheckConsumer interface {
@@ -25,25 +39,33 @@ type HealthCheckConsumer interface {
 }
 
 type HealthCheck struct {
-	consumer HealthCheckConsumer
-	endpoint *url.URL
-	interval time.Duration
-	timeout  time.Duration
-	host     string
+	consumer    HealthCheckConsumer
+	endpoint    *url.URL
+	interval    time.Duration
+	timeout     time.Duration
+	host        string
+	protocol    string
+	subprotocol string
 
 	ctx    context.Context
 	cancel context.CancelFunc
 }
 
-func NewHealthCheck(consumer HealthCheckConsumer, endpoint *url.URL, interval time.Duration, timeout time.Duration, host string) *HealthCheck {
+func NewHealthCheck(consumer HealthCheckConsumer, endpoint *url.URL, interval time.Duration, timeout time.Duration, host string, protocol string, subprotocol string) *HealthCheck {
 	ctx, cancel := context.WithCancel(context.Background())
 
+	if protocol == "" {
+		protocol = HealthCheckProtocolHTTP
+	}
+
 	hc := &HealthCheck{
-		consumer: consumer,
-		endpoint: endpoint,
-		interval: interval,
-		timeout:  timeout,
-		host:     host,
+		consumer:    consumer,
+		endpoint:    endpoint,
+		interval:    interval,
+		timeout:     timeout,
+		host:        host,
+		protocol:    protocol,
+		subprotocol: subprotocol,
 
 		ctx:    ctx,
 		cancel: cancel,
@@ -79,6 +101,8 @@ func (hc *HealthCheck) check() {
 	ctx, cancel := context.WithTimeout(hc.ctx, hc.timeout)
 	defer cancel()
 
+	var websocketKey string
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, hc.endpoint.String(), nil)
 	if err != nil {
 		hc.reportResult(false, err)
@@ -86,6 +110,24 @@ func (hc *HealthCheck) check() {
 	}
 
 	req.Header.Set("User-Agent", healthCheckUserAgent)
+
+	if hc.protocol == HealthCheckProtocolWebSocket {
+		req.Header.Set("Connection", "Upgrade")
+		req.Header.Set("Upgrade", "websocket")
+		key, err := newWebSocketKey()
+		if err != nil {
+			hc.reportResult(false, err)
+			return
+		}
+		websocketKey = key
+
+		req.Header.Set("Sec-WebSocket-Key", key)
+		req.Header.Set("Sec-WebSocket-Version", "13")
+
+		if hc.subprotocol != "" {
+			req.Header.Set("Sec-WebSocket-Protocol", hc.subprotocol)
+		}
+	}
 
 	if hc.host != "" {
 		req.Host = hc.host
@@ -104,14 +146,75 @@ func (hc *HealthCheck) check() {
 	}
 	defer resp.Body.Close()
 
-	_, _ = io.Copy(io.Discard, resp.Body)
+	// On a protocol switch, Response.Body is the underlying connection (see
+	// Response.isProtocolSwitch), and reading it blocks until the peer sends
+	// something. Nothing to drain in that case anyway, as the connection can
+	// no longer be reused for HTTP.
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		_, _ = io.Copy(io.Discard, resp.Body)
+	}
 
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+	if !hc.statusIsHealthy(resp.StatusCode) {
 		hc.reportResult(false, fmt.Errorf("%w (%d)", ErrorHealthCheckUnexpectedStatus, resp.StatusCode))
 		return
 	}
 
+	if hc.protocol == HealthCheckProtocolWebSocket {
+		if err := hc.validateHandshake(resp, websocketKey); err != nil {
+			hc.reportResult(false, err)
+			return
+		}
+	}
+
 	hc.reportResult(true, nil)
+}
+
+// The client-side checks RFC 6455 4.1 requires of a handshake response.
+func (hc *HealthCheck) validateHandshake(resp *http.Response, key string) error {
+	if upgrade := resp.Header.Get("Upgrade"); !strings.EqualFold(upgrade, "websocket") {
+		return fmt.Errorf("%w: Upgrade was %q", ErrorHealthCheckInvalidHandshake, upgrade)
+	}
+
+	if !httpguts.HeaderValuesContainsToken(resp.Header["Connection"], "Upgrade") {
+		return fmt.Errorf("%w: Connection was %q", ErrorHealthCheckInvalidHandshake, resp.Header.Get("Connection"))
+	}
+
+	if got, want := resp.Header.Get("Sec-WebSocket-Accept"), webSocketAccept(key); got != want {
+		return fmt.Errorf("%w: Sec-WebSocket-Accept was %q, want %q", ErrorHealthCheckInvalidHandshake, got, want)
+	}
+
+	// A server may decline the subprotocol, but must not answer with one that
+	// was never offered.
+	if selected := resp.Header.Get("Sec-WebSocket-Protocol"); selected != "" && selected != hc.subprotocol {
+		return fmt.Errorf("%w: server selected subprotocol %q", ErrorHealthCheckInvalidHandshake, selected)
+	}
+
+	return nil
+}
+
+func (hc *HealthCheck) statusIsHealthy(status int) bool {
+	if hc.protocol == HealthCheckProtocolWebSocket {
+		return status == http.StatusSwitchingProtocols
+	}
+
+	return status >= 200 && status <= 299
+}
+
+func newWebSocketKey() (string, error) {
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+
+	return base64.StdEncoding.EncodeToString(nonce), nil
+}
+
+// webSocketAccept returns the digest RFC 6455 requires the server to send back
+// for a given key. SHA-1 is mandated by the protocol, not chosen for security.
+func webSocketAccept(key string) string {
+	sum := sha1.Sum([]byte(key + webSocketGUID))
+
+	return base64.StdEncoding.EncodeToString(sum[:])
 }
 
 func (hc *HealthCheck) reportResult(success bool, err error) {

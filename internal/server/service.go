@@ -38,6 +38,7 @@ const (
 
 	DefaultHealthCheckPath     = "/up"
 	DefaultHealthCheckPort     = 0
+	DefaultHealthCheckProtocol = HealthCheckProtocolHTTP
 	DefaultHealthCheckInterval = time.Second
 	DefaultHealthCheckTimeout  = time.Second * 5
 
@@ -57,6 +58,7 @@ var (
 	ErrorUnableToLoadErrorPages              = errors.New("unable to load error pages")
 	ErrorAutomaticTLSDoesNotSupportWildcards = errors.New("automatic TLS does not support wildcards")
 	ErrServiceOptionsInvalid                 = errors.New("service options invalid")
+	ErrHealthCheckConfigInvalid              = errors.New("invalid health check configuration")
 
 	contextKeyInternalRequest = contextKey("internal-request")
 )
@@ -86,6 +88,30 @@ type HealthCheckConfig struct {
 	Interval time.Duration `json:"interval"`
 	Timeout  time.Duration `json:"timeout"`
 	Host     string        `json:"host"`
+	Protocol string        `json:"protocol"`
+
+	// MQTT over WebSocket, for instance, requires the client to offer `mqtt`
+	// and the server to select it; a strict server rejects a handshake without
+	// it. Optional, as many servers do not negotiate a subprotocol at all.
+	WebSocketSubprotocol string `json:"websocket_subprotocol"`
+}
+
+// Validate rejects an unrecognised protocol rather than letting it fall back
+// to HTTP, which would leave a WebSocket-only target failing indefinitely.
+func (hc HealthCheckConfig) Validate() error {
+	switch hc.Protocol {
+	case "", HealthCheckProtocolHTTP, HealthCheckProtocolWebSocket:
+	default:
+		return fmt.Errorf("%w: unknown protocol %q (must be %q or %q)",
+			ErrHealthCheckConfigInvalid, hc.Protocol, HealthCheckProtocolHTTP, HealthCheckProtocolWebSocket)
+	}
+
+	if hc.WebSocketSubprotocol != "" && hc.Protocol != HealthCheckProtocolWebSocket {
+		return fmt.Errorf("%w: a websocket subprotocol can only be set when the protocol is %q",
+			ErrHealthCheckConfigInvalid, HealthCheckProtocolWebSocket)
+	}
+
+	return nil
 }
 
 type DeploymentOptions struct {
